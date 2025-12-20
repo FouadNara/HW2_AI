@@ -5,6 +5,8 @@ import random
 
 # TODO: section a : 3
 def smart_heuristic(env: WarehouseEnv, robot_id: int):
+    steps = env.num_steps
+    robot = env.get_robot(robot_id)
     pass
 
 class AgentGreedyImproved(AgentGreedy):
