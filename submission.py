@@ -23,7 +23,33 @@ class AgentMinimax(Agent):
 class AgentAlphaBeta(Agent):
     # TODO: section c : 1
     def run_step(self, env: WarehouseEnv, agent_id, time_limit):
-        raise NotImplementedError()
+        return self.rb_alpha_beta(env, env.start, agent_id, time_limit, 0, -int("inf"), int("inf"))
+
+    def rb_alpha_beta(self, env: WarehouseEnv, state, agent_id, time_limit, turn, a, b):
+        if env.done() or time_limit == 0:
+            return h(state, agent_id)
+
+        agent = env.get_robot(agent_id)
+        children = agent.successors(env, agent_id)
+        if turn == agent_id:
+            curMax = -int("inf")
+            for c in children:
+                v = self.rb_alpha_beta(env, c, agent_id, time_limit - 1, 1 - agent_id, a, b)
+                curMax = max(v, curMax)
+                a = max(curMax, a)
+                if curMax >= b:
+                    return int("inf")
+            return curMax
+        else:
+            curMin = int("inf")
+            for c in children:
+                v = self.rb_alpha_beta(env, c, agent_id, time_limit - 1, 1 - agent_id, a, b)
+                curMin = min(v, curMin)
+                b = min(curMin, b)
+                if curMin <= a:
+                    return -int("inf")
+            return curMin
+        
 
 
 class AgentExpectimax(Agent):
