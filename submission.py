@@ -11,9 +11,7 @@ def smart_heuristic(env: WarehouseEnv, robot_id: int):
 
     # if the robot is already holding a package, then return credit + reward - cost
     if robot.package is not None:
-        reward = 2 * manhattan_distance(
-            robot.package.position, robot.package.destination
-        )
+        reward = 2 * manhattan_distance(robot.package.position, robot.package.destination)
         cost = manhattan_distance(robot.position, robot.package.destination)
         return 1000 * robot.credit + reward - cost
 
@@ -148,9 +146,91 @@ class AgentMinimax(Agent):
 
 
 class AgentAlphaBeta(Agent):
-    # TODO: section c : 1
+    def utility_heuristic(self, env, robot_id):
+        # Using the same logic as Minimax for consistency
+        return smart_heuristic(env, robot_id) - smart_heuristic(env, (robot_id + 1) % 2)
+
     def run_step(self, env: WarehouseEnv, agent_id, time_limit):
-        raise NotImplementedError()
+        start_time = time.time()
+        time_buffer = 0.05 
+        other_agent_id = (agent_id + 1) % 2
+        
+        class TimeoutException(Exception):
+            pass
+
+        def check_timeout():
+            if time.time() - start_time >= time_limit - time_buffer:
+                raise TimeoutException()
+
+        def min_value(curr_env, depth, alpha, beta):
+            check_timeout()
+            if curr_env.done() or depth == 0:
+                return self.utility_heuristic(curr_env, agent_id)
+            
+            v = float('inf')
+            _, children = self.successors(curr_env, other_agent_id)
+            
+            if not children:
+                return self.utility_heuristic(curr_env, agent_id)
+
+            for child in children:
+                v = min(v, max_value(child, depth - 1, alpha, beta))
+                # Pruning logic: If this value is already worse than what Max can get elsewhere
+                if v <= alpha:
+                    return v
+                beta = min(beta, v)
+            return v
+
+        def max_value(curr_env, depth, alpha, beta):
+            check_timeout()
+            if curr_env.done() or depth == 0:
+                return self.utility_heuristic(curr_env, agent_id)
+            
+            v = float('-inf')
+            _, children = self.successors(curr_env, agent_id)
+            
+            if not children:
+                return self.utility_heuristic(curr_env, agent_id)
+
+            for child in children:
+                v = max(v, min_value(child, depth - 1, alpha, beta))
+                # Pruning logic: If this value is already better than what Min will allow
+                if v >= beta:
+                    return v
+                alpha = max(alpha, v)
+            return v
+
+        best_op = "park" 
+        current_depth = 1
+
+        try:
+            while True:
+                operators, children = self.successors(env, agent_id)
+                if not operators:
+                    break
+                
+                best_op_in_depth = operators[0]
+                max_val = float('-inf')
+                # Initialize alpha and beta for each iterative deepening step
+                alpha = float('-inf')
+                beta = float('inf')
+                
+                for op, child in zip(operators, children):
+                    val = min_value(child, current_depth - 1, alpha, beta)
+                    if val > max_val:
+                        max_val = val
+                        best_op_in_depth = op
+                    
+                    # Update alpha at the root level as well
+                    alpha = max(alpha, max_val)
+                
+                best_op = best_op_in_depth
+                current_depth += 1
+                
+        except TimeoutException:
+            pass
+            
+        return best_op
 
 
 class AgentExpectimax(Agent):
