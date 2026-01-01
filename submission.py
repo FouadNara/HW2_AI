@@ -1,13 +1,29 @@
 from Agent import Agent, AgentGreedy
 from WarehouseEnv import WarehouseEnv, manhattan_distance
 import random
+import time # for time management in AgentMinimax
 
 
 # TODO: section a : 3
+#! IGNORE
 def smart_heuristic(env: WarehouseEnv, robot_id: int):
-    steps = env.num_steps
     robot = env.get_robot(robot_id)
-    pass
+
+    # if the robot is already holding a package, then return credit + reward - cost
+    if robot.package is not None:
+        reward = 2 * manhattan_distance(
+            robot.package.position, robot.package.destination
+        )
+        cost = manhattan_distance(robot.position, robot.package.destination)
+        return 1000 * robot.credit + reward - cost
+
+    # if the robot isn't holding a package, then take the closest avalibale package to it,
+    avail = [p for p in env.packages if p.on_board]
+    p = sorted(avail, key=lambda p: manhattan_distance(robot.position, p.position))[0]
+
+    # and then return credit - position to the closest package to the robot
+    cost = manhattan_distance(robot.position, p.position)
+    return 1000 * robot.credit - cost
 
 class AgentGreedyImproved(AgentGreedy):
     def heuristic(self, env: WarehouseEnv, robot_id: int):
@@ -15,41 +31,126 @@ class AgentGreedyImproved(AgentGreedy):
 
 
 class AgentMinimax(Agent):
-    # TODO: section b : 4
+    def utility_heuristic(self, env, robot_id):
+        return smart_heuristic(env, robot_id) - smart_heuristic(env, (robot_id + 1) % 2)
+
+    # implmemented with iterative deepening
     def run_step(self, env: WarehouseEnv, agent_id, time_limit):
-        raise NotImplementedError()
+        # we should record the start time to manage time limits, later we will check elapsed time, 
+        # and stop execution if we exceed it
+        start_time = time.time()
+
+        # sometimes, the agent "crashes" the game right at the time limit, so after some research, 
+        # we should add a small "time buffer" to avoid that. so we define
+        # "time_buffer" as the small time we stop the search before the actual time limit
+        time_buffer = 0.05 
+
+        # the id of the other agent just to make life easier (and code readable)
+        other_agent_id = (agent_id + 1) % 2
+        
+        # this is a custom exception to handle timeout; we raise it when we exceed time limit
+        class TimeoutException(Exception):
+            pass # pass here because we dont have any special handling or info
+
+        # we check the time elapsed, if we exceed the time limit (minus buffer), we raise TimeoutException
+        def check_timeout():
+            if time.time() - start_time >= time_limit - time_buffer:
+                raise TimeoutException()
+
+        # Minimax: Min Value (Opponent's Turn)
+        def min_value(curr_env, depth):
+            # at every new call, we check for timeout, game over/clear, or depth limit reached
+            check_timeout()
+            if curr_env.done() or depth == 0:
+                return  self.utility_heuristic(curr_env, agent_id)
+            
+            value = float('inf') # v = +infinity
+            operators, children = self.successors(curr_env, other_agent_id)
+            
+            # If no legal moves (terminal state), evaluate state
+            if not children:
+                return  self.utility_heuristic(curr_env, agent_id) # return utility value of the current state
+
+            for child in children:
+                value = min(value, max_value(child, depth - 1))
+            return value
+
+        # Minimax: Max Value (Agent's Turn)
+        def max_value(curr_env, depth):
+            # at every new call, we check for timeout, game over/clear, or depth limit reached
+            check_timeout()
+            if curr_env.done() or depth == 0: # if game over/clear or depth limit reached
+                return  self.utility_heuristic(curr_env, agent_id) # return utility value of the current state
+            
+            value = float('-inf') # v = -infinity
+            operators, children = self.successors(curr_env, agent_id)
+            
+            # If no legal moves (terminal state), evaluate state
+            if not children:
+                return  self.utility_heuristic(curr_env, agent_id) # return utility value of the current state
+
+            for child in children:
+                value = max(value, min_value(child, depth - 1))
+            return value
+
+        # we define a best_op variable to store the best move found so far, 
+        # this is the operator the agent will take decided by RB-minimax
+        ####### best_op = None
+        ####### 
+        ####### # we store the first legal move in case we timeout before finding any better move
+        ####### initial_ops = env.get_legal_operators(agent_id)
+        ####### if not initial_ops:
+        #######     return None
+        ####### # NOTE: im not sure if this is the behavior the segel wants, but we have to have a fallback move
+        best_op = "park" 
+
+        # we start searching with depth = 1, 
+        # and increase depth until timeout or game over/clear or max depth reached  
+        # this is used with min_value and max_value functions for them to calculate values at certain depth
+        current_depth = 1
+
+        # try catch to handle timeout exception
+        try:
+            while True: # we loop until timeout, game over/clear, or max depth reached, each iteration calculates one depth level
+                # we get all the chlildren and operators for the current env state
+                operators, children = self.successors(env, agent_id)
+                
+                # if we are in a state where there are no legal moves, we break, as we are stuck
+                # we could have checked `children` instead of `operators`, but both are equivalent here
+                if not operators:
+                    break
+                
+                # from here its basically the `value` function as we learned in the tutorials
+
+                # these are variables to track the best move for THIS depth level
+                best_op_in_depth = "park" # we default to first legal move (so we have fallback)
+                max_val = float('-inf') # v = -infinity, we are a Max node
+                
+                for op, child in zip(operators, children):
+                    # After we move, it's the opponent's turn (Min node)
+                    val = min_value(child, current_depth - 1) # we calculate the value of each child, children are min nodes
+                    
+                    #
+                    if val > max_val:
+                        max_val = val
+                        best_op_in_depth = op
+                
+                # If we completed the depth without timeout, update the global best_op
+                best_op = best_op_in_depth
+                current_depth += 1 # increase depth for next iteration
+                
+        except TimeoutException:
+            # caught a timeout exception, we return the 
+            # best_op from the last fully completed depth.
+            pass
+            
+        return best_op
 
 
 class AgentAlphaBeta(Agent):
     # TODO: section c : 1
     def run_step(self, env: WarehouseEnv, agent_id, time_limit):
-        return self.rb_alpha_beta(env, env.start, agent_id, time_limit, 0, -int("inf"), int("inf"))
-
-    def rb_alpha_beta(self, env: WarehouseEnv, state, agent_id, time_limit, turn, a, b):
-        if env.done() or time_limit == 0:
-            return h(state, agent_id)
-
-        agent = env.get_robot(agent_id)
-        children = agent.successors(env, agent_id)
-        if turn == agent_id:
-            curMax = -int("inf")
-            for c in children:
-                v = self.rb_alpha_beta(env, c, agent_id, time_limit - 1, 1 - agent_id, a, b)
-                curMax = max(v, curMax)
-                a = max(curMax, a)
-                if curMax >= b:
-                    return int("inf")
-            return curMax
-        else:
-            curMin = int("inf")
-            for c in children:
-                v = self.rb_alpha_beta(env, c, agent_id, time_limit - 1, 1 - agent_id, a, b)
-                curMin = min(v, curMin)
-                b = min(curMin, b)
-                if curMin <= a:
-                    return -int("inf")
-            return curMin
-        
+        raise NotImplementedError()
 
 
 class AgentExpectimax(Agent):
