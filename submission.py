@@ -3,170 +3,222 @@ from WarehouseEnv import WarehouseEnv, manhattan_distance
 import random
 import time # for time management in AgentMinimax
 
+# time buffer so to avoid timeout problems and agents running out of time even tho they finished at the exact time limit
+EPSILON_TIME = 0.05 
+
+# SECTION: section A heuristic
 def smart_heuristic(env: WarehouseEnv, robot_id: int):
     robot = env.get_robot(robot_id)
     other_robot = env.get_robot((robot_id + 1) % 2)
-    packages = env.packages
-    
-    # Feature 1: Credit, for a greedy agent, we need to be maximizing our own credit.
-    f_credit = robot.credit
-    
-    # Feature 2: Battery, we want to have more battery to be able to move more.
-    f_battery = robot.battery
-    
-    # Feature 3: Distance to objective (next package or destination)
-    dist = 0
-    if robot.package is not None: # We have a package, objective is to go to destination
-        dest = robot.package.destination
-        dist = manhattan_distance(robot.position, dest)
-    else: # We need a package, objective is to go to nearest package
-        if not packages:
-            dist = 0 # No packages left
+
+    # terminal state
+    if env.done():
+        if robot.credit > other_robot.credit:
+            return float('inf')  # win
+        elif robot.credit < other_robot.credit:
+            return -float('inf') # loss
         else:
-            # Find min distance to any package
-            dists = [manhattan_distance(robot.position, p.position) for p in packages]
-            dist = min(dists) if dists else 0
+            return 0 # draw
 
-    # idk, these seem fine from tournament testing
-    w_credit = 10.0
-    w_battery = 1.0
-    w_dist = 2.0
-    
-    # We subtract distance feature because we want to minimize it
-    heuristic_value = (w_credit * f_credit) + (w_battery * f_battery) - (w_dist * dist)
-    
-    return heuristic_value
+    # f1: credit (our main objective, we want this to be maximized so ww give it a big positive weight)
+    f1 = robot.credit
+    w_credit  = 15
 
+    # f2: distance to next goal (we want this to be minimized so we give it a negative weight)
+    f2 = 0
+    w_dist    = -5
+    if robot.package is not None:
+        f2 = manhattan_distance(robot.position, robot.package.destination)
+    else:
+        avail = [p for p in env.packages if p.on_board]
+        if avail:
+            # distance to pick up + distance to deliver (closer package)
+            f2 = min(manhattan_distance(robot.position, p.position) + manhattan_distance(p.position, p.destination) for p in avail)
+
+    # f3: battery
+    f3 = robot.battery
+    w_battery = 2
+
+    return w_credit * f1 + w_dist * f2 + w_battery * f3
+# !SECTION
+
+# SECTION: section B minimax heuristic
+def minimax_heuristic(env: WarehouseEnv, robot_id: int):
+    robot = env.get_robot(robot_id)
+    other_robot = env.get_robot((robot_id + 1) % 2)
+    
+    # our main objective is to maximize the credit difference
+    # we also give it a huge weight  
+    score = 1000 * (robot.credit - other_robot.credit) 
+
+    # we will add a small contribution from battery
+    score += robot.battery
+
+    # we are looking to minimize the distance to our current goal
+    if robot.package: # robot has a package
+        dist = manhattan_distance(robot.position, robot.package.destination)
+        score += (500 - dist) # we add a big BONUS for having a package, this encourages having packages 
+    
+    else: # robot has no package
+
+        active_packages = [p for p in env.packages if p.on_board]
+        
+        # from all the "available" packages, find the closest one
+        if active_packages:
+            min_dist = float('inf')
+            for p in active_packages:
+                d = manhattan_distance(robot.position, p.position)
+                if d < min_dist:
+                    min_dist = d
+            
+            # we add a BONUS for picking up a package, this encourages the robot to look for packages
+            score += (200 - min_dist)
+
+    return score
+# !SECTION
+
+# SECTION: section B & D eval function for minimax and expectimax
+def eval_function(env: WarehouseEnv, agent_id: int):
+        if env.done(): # terminal state
+            my_robot = env.get_robot(agent_id)
+            op_robot = env.get_robot((agent_id + 1) % 2)
+
+            
+            if my_robot.credit > op_robot.credit:
+                return float('inf')  # Win by Score
+            elif my_robot.credit < op_robot.credit:
+                return -float('inf') # Loss by Score
+            else:
+                # we will use battery as a tiebreaker
+                if my_robot.battery > op_robot.battery:
+                    return 10000  # Win by Battery
+                elif my_robot.battery < op_robot.battery:
+                    return -10000 # Loss by Battery
+                else:
+                    return 0 # Absolute Draw
+                    
+        return minimax_heuristic(env, agent_id)
+# !SECTION
+
+# SECTION: section A improved greedy agent
 class AgentGreedyImproved(AgentGreedy):
     def heuristic(self, env: WarehouseEnv, robot_id: int):
         return smart_heuristic(env, robot_id)
+# !SECTION
 
-
+# SECTION: section B minimax agent
 class AgentMinimax(Agent):
-    def utility_heuristic(self, env, robot_id):
-        return smart_heuristic(env, robot_id) - smart_heuristic(env, (robot_id + 1) % 2)
-
-    # implmemented with iterative deepening
     def run_step(self, env: WarehouseEnv, agent_id, time_limit):
-        # we should record the start time to manage time limits, later we will check elapsed time, 
-        # and stop execution if we exceed it
         start_time = time.time()
+        end_time = start_time + time_limit - EPSILON_TIME
 
-        # sometimes, the agent "crashes" the game right at the time limit, so after some research, 
-        # we should add a small "time buffer" to avoid that. so we define
-        # "time_buffer" as the small time we stop the search before the actual time limit
-        time_buffer = 0.05 
+        # fallback solution in case we timeout before finishing depth=1
+        legal = env.get_legal_operators(agent_id)
+        if legal:
+            ops, children = self.successors(env, agent_id)
+            best_op = random.choice(legal) if legal else None
+            best_val = -float('inf')
+            for op, child in zip(ops, children):
+                v = eval_function(child, agent_id)
+                if v > best_val:
+                    best_val = v
+                    best_op = op
 
-        # the id of the other agent just to make life easier (and code readable)
-        other_agent_id = (agent_id + 1) % 2
-        
-        # this is a custom exception to handle timeout; we raise it when we exceed time limit
-        class TimeoutException(Exception):
-            pass # pass here because we dont have any special handling or info
+        depth = 1
 
-        # we check the time elapsed, if we exceed the time limit (minus buffer), we raise TimeoutException
-        def check_timeout():
-            if time.time() - start_time >= time_limit - time_buffer:
-                raise TimeoutException()
+        while True:
+            try:
+                # we dont actually care abou the value here, just the operator of teh best move
+                _, op = self.minimax(env, agent_id, depth, end_time, maximizing_player=True)
+                if op is not None:
+                    best_op = op
+                depth += 1
+            except TimeoutError:
+                break
 
-        # Minimax: Min Value (Opponent's Turn)
-        def min_value(curr_env, depth):
-            # at every new call, we check for timeout, game over/clear, or depth limit reached
-            check_timeout()
-            if curr_env.done() or depth == 0:
-                return  self.utility_heuristic(curr_env, agent_id)
-            
-            value = float('inf') # v = +infinity
-            operators, children = self.successors(curr_env, other_agent_id)
-            
-            # If no legal moves (terminal state), evaluate state
-            if not children:
-                return  self.utility_heuristic(curr_env, agent_id) # return utility value of the current state
-
-            for child in children:
-                value = min(value, max_value(child, depth - 1))
-            return value
-
-        # Minimax: Max Value (Agent's Turn)
-        def max_value(curr_env, depth):
-            # at every new call, we check for timeout, game over/clear, or depth limit reached
-            check_timeout()
-            if curr_env.done() or depth == 0: # if game over/clear or depth limit reached
-                return  self.utility_heuristic(curr_env, agent_id) # return utility value of the current state
-            
-            value = float('-inf') # v = -infinity
-            operators, children = self.successors(curr_env, agent_id)
-            
-            # If no legal moves (terminal state), evaluate state
-            if not children:
-                return  self.utility_heuristic(curr_env, agent_id) # return utility value of the current state
-
-            for child in children:
-                value = max(value, min_value(child, depth - 1))
-            return value
-
-        # we define a best_op variable to store the best move found so far, 
-        # this is the operator the agent will take decided by RB-minimax
-        ####### best_op = None
-        ####### 
-        ####### # we store the first legal move in case we timeout before finding any better move
-        ####### initial_ops = env.get_legal_operators(agent_id)
-        ####### if not initial_ops:
-        #######     return None
-        ####### # NOTE: im not sure if this is the behavior the segel wants, but we have to have a fallback move
-        best_op = "park" 
-
-        # we start searching with depth = 1, 
-        # and increase depth until timeout or game over/clear or max depth reached  
-        # this is used with min_value and max_value functions for them to calculate values at certain depth
-        current_depth = 1
-
-        # try catch to handle timeout exception
-        try:
-            while True: # we loop until timeout, game over/clear, or max depth reached, each iteration calculates one depth level
-                # we get all the chlildren and operators for the current env state
-                operators, children = self.successors(env, agent_id)
-                
-                # if we are in a state where there are no legal moves, we break, as we are stuck
-                # we could have checked `children` instead of `operators`, but both are equivalent here
-                if not operators:
-                    break
-                
-                # from here its basically the `value` function as we learned in the tutorials
-
-                # these are variables to track the best move for THIS depth level
-                best_op_in_depth = "park" # we default to first legal move (so we have fallback)
-                max_val = float('-inf') # v = -infinity, we are a Max node
-                
-                for op, child in zip(operators, children):
-                    # After we move, it's the opponent's turn (Min node)
-                    val = min_value(child, current_depth - 1) # we calculate the value of each child, children are min nodes
-                    
-                    #
-                    if val > max_val:
-                        max_val = val
-                        best_op_in_depth = op
-                
-                # If we completed the depth without timeout, update the global best_op
-                best_op = best_op_in_depth
-                current_depth += 1 # increase depth for next iteration
-                
-        except TimeoutException:
-            # caught a timeout exception, we return the 
-            # best_op from the last fully completed depth.
-            pass
-            
         return best_op
 
 
+    def minimax(self, env: WarehouseEnv, agent_id: int, depth: int, end_time: float, maximizing_player: bool=True):
+        if maximizing_player:
+            return self.max_value(env, agent_id, depth, end_time)
+        else:
+            return self.min_value(env, agent_id, depth, end_time)
+
+
+    def max_value(self, env: WarehouseEnv, agent_id: int, depth: int, end_time: float):
+        if time.time() > end_time:
+            raise TimeoutError()
+
+        if depth == 0 or env.done():
+            return eval_function(env, agent_id), None
+
+        # MAX plays as agent_id (the root)
+        operators, children = self.successors(env, agent_id)
+        if not operators:
+            return eval_function(env, agent_id), None
+
+        # reorder the moves so we can look at more promising moves first
+        pairs = list(zip(operators, children))
+        pairs.sort(key=lambda oc: eval_function(oc[1], agent_id), reverse=True)
+
+        best_val = -float('inf')
+        best_op = pairs[0][0]
+
+        for op, child in pairs:
+            if time.time() > end_time:
+                raise TimeoutError()
+
+            val, _ = self.minimax(child, agent_id, depth - 1, end_time, maximizing_player=False)
+            if val > best_val:
+                best_val = val
+                best_op = op
+
+        return best_val, best_op
+
+
+    def min_value(self, env: WarehouseEnv, agent_id: int, depth: int, end_time: float):
+        if time.time() > end_time:
+            raise TimeoutError()
+
+        if depth == 0 or env.done():
+            return eval_function(env, agent_id), None
+
+        opponent_id = (agent_id + 1) % 2
+
+        # MIN plays as opponent_id, but........... we still evaluate from agent_id's perspective
+        operators, children = self.successors(env, opponent_id)
+        if not operators:
+            return eval_function(env, agent_id), None
+
+        # reorder the moves so we can look at more promising moves first
+        pairs = list(zip(operators, children))
+        pairs.sort(key=lambda oc: eval_function(oc[1], agent_id))
+
+        best_val = float('inf')
+        best_op = pairs[0][0]
+
+        for op, child in pairs:
+            if time.time() > end_time:
+                raise TimeoutError()
+
+            val, _ = self.minimax(child, agent_id, depth - 1, end_time, maximizing_player=True)
+            if val < best_val:
+                best_val = val
+                best_op = op
+
+        return best_val, best_op
+# !SECTION
+
+# SECTION: section C alpha-beta agent
 class AgentAlphaBeta(Agent):
     def utility_heuristic(self, env, robot_id):
         # Using the same logic as Minimax for consistency
-        return smart_heuristic(env, robot_id) - smart_heuristic(env, (robot_id + 1) % 2)
+        return minimax_heuristic(env, (robot_id + 1) % 2)
 
     def run_step(self, env: WarehouseEnv, agent_id, time_limit):
         start_time = time.time()
-        time_buffer = 0.05 
+        time_buffer = EPSILON_TIME
         other_agent_id = (agent_id + 1) % 2
         
         class TimeoutException(Exception):
@@ -245,21 +297,67 @@ class AgentAlphaBeta(Agent):
             pass
             
         return best_op
+# !SECTION
 
-
+# SECTION: section D expectimax agent
 class AgentExpectimax(Agent):
-    # TODO: section d : 3
     def run_step(self, env: WarehouseEnv, agent_id, time_limit):
-        raise NotImplementedError()
+        self.expectimax(env, agent_id, 1, agent_id, time.time() + time_limit - EPSILON_TIME)
 
+    def expectimax(self, env: WarehouseEnv, agent_id: int, depth: int, turn: int, end_time: float):
+        if time.time() > end_time:
+            raise TimeoutError()
 
+        if depth == 0 or env.done():
+            return eval_function(env, agent_id)
+
+        operators, children = self.successors(env, agent_id)
+
+        if not operators:
+            return eval_function(env, agent_id)
+        
+        if turn == agent_id: # its our agents turn, we find max over children
+            CurMax = -float('inf')
+            for child in children:
+                val = self.expectimax(child, agent_id, depth - 1, (turn + 1) % 2, end_time)
+                CurMax = max(CurMax, val)
+            return CurMax
+        
+        else: # turn == (agent_id + 1) % 2
+            # all children are equally likely, but the acions "move west" (move left) 
+            # and "pick up" are 3 times more likely
+            Probability = [1] * len(operators) #a list for probabilities
+
+            sum = 0
+            index = 0
+            for child, op in zip(children, operators):
+                if op == "move west" or op == "pick up":
+                    sum += 3
+                    Probability[index] = 3
+                else:
+                    sum += 1
+                index += 1
+                
+            Probability = [p / sum for p in Probability] # Normalizing the  probabilities
+            # now here we have the probabilities of each child
+
+            # here we calculate the expected value [sum over children (x * prob(x))]
+            CurExp = 0
+            for child, prob in zip(children, Probability):
+                CurExp += prob * self.expectimax(child, agent_id, depth - 1, (turn + 1) % 2, end_time)
+
+            return CurExp
+# !SECTION
+
+# SECTION: hard coded agent
 # here you can check specific paths to get to know the environment
 class AgentHardCoded(Agent):
     def __init__(self):
         self.step = 0
         # specifiy the path you want to check - if a move is illegal - the agent will choose a random move
-        self.trajectory = ["move north", "move east", "move north", "move north", "pick_up", "move east", "move east",
-                           "move south", "move south", "move south", "move south", "drop_off"]
+        self.trajectory = ["move north", "move east", "move north", "move north", "pick up", "move east", "move east",
+                           "move south", "move south", "move south", "move south", "drop off"] 
+        # i fixed "pick_up" and "drop_off" to "pick up" and "drop off" (like in Warehouse.py, otherwise it would be illegal moves)
 
     def run_step(self, env: WarehouseEnv, robot_id, time_limit):
         if self.step == len(self.trajectory):
@@ -275,3 +373,5 @@ class AgentHardCoded(Agent):
         operators, _ = self.successors(env, robot_id)
 
         return random.choice(operators)
+# !SECTION
+
