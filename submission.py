@@ -3,25 +3,39 @@ from WarehouseEnv import WarehouseEnv, manhattan_distance
 import random
 import time # for time management in AgentMinimax
 
-
-# TODO: section a : 3
-#! IGNORE
 def smart_heuristic(env: WarehouseEnv, robot_id: int):
     robot = env.get_robot(robot_id)
+    other_robot = env.get_robot((robot_id + 1) % 2)
+    packages = env.packages
+    
+    # Feature 1: Credit, for a greedy agent, we need to be maximizing our own credit.
+    f_credit = robot.credit
+    
+    # Feature 2: Battery, we want to have more battery to be able to move more.
+    f_battery = robot.battery
+    
+    # Feature 3: Distance to objective (next package or destination)
+    dist = 0
+    if robot.package is not None: # We have a package, objective is to go to destination
+        dest = robot.package.destination
+        dist = manhattan_distance(robot.position, dest)
+    else: # We need a package, objective is to go to nearest package
+        if not packages:
+            dist = 0 # No packages left
+        else:
+            # Find min distance to any package
+            dists = [manhattan_distance(robot.position, p.position) for p in packages]
+            dist = min(dists) if dists else 0
 
-    # if the robot is already holding a package, then return credit + reward - cost
-    if robot.package is not None:
-        reward = 2 * manhattan_distance(robot.package.position, robot.package.destination)
-        cost = manhattan_distance(robot.position, robot.package.destination)
-        return 1000 * robot.credit + reward - cost
-
-    # if the robot isn't holding a package, then take the closest avalibale package to it,
-    avail = [p for p in env.packages if p.on_board]
-    p = sorted(avail, key=lambda p: manhattan_distance(robot.position, p.position))[0]
-
-    # and then return credit - position to the closest package to the robot
-    cost = manhattan_distance(robot.position, p.position)
-    return 1000 * robot.credit - cost
+    # idk, these seem fine from tournament testing
+    w_credit = 10.0
+    w_battery = 1.0
+    w_dist = 2.0
+    
+    # We subtract distance feature because we want to minimize it
+    heuristic_value = (w_credit * f_credit) + (w_battery * f_battery) - (w_dist * dist)
+    
+    return heuristic_value
 
 class AgentGreedyImproved(AgentGreedy):
     def heuristic(self, env: WarehouseEnv, robot_id: int):
